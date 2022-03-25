@@ -1,0 +1,128 @@
+#!/usr/bin/env python
+
+import sys
+from os import path, walk, makedirs
+import argparse
+
+try:
+    import fontforge
+except ImportError:
+    print('The required FontForge modules could not be loaded.')
+    print('You need FontForge with Python bindings for this script to work.')
+    sys.exit(1)
+
+COPYRIGHT = '''
+Box drawing characters added by K4zoku from SourceCodePro
+(c) 2010 - 2020 Adobe Systems Incorporated (http://www.adobe.com/), with Reserved Font Name `Source'.'''
+
+def get_argparser(ArgumentParser=argparse.ArgumentParser):
+    parser = ArgumentParser(
+        description=(
+            """
+            Font patcher for Box drawing character.
+            Requires FontForge with Python bindings.
+            Stores the patched font as a new, renamed font file by default.
+            """
+        )
+    )
+    parser.add_argument('target_fonts', help='font files to patch', metavar='font',
+                        nargs='+', type=argparse.FileType('rb'))
+    parser.add_argument('--no-rename',
+                        help='don\'t add suffix " Pro" to the font name',
+                        default=True, action='store_false', dest='rename_font')
+    parser.add_argument('--output-dir',
+                        help='output directory',
+                        default='.', metavar='dir', dest='output_dir')
+    parser.add_argument('--source-font', help='source symbol font', metavar='font',
+                        dest='source_font',
+                        default='fonts/SourceCodePro/SourceCodePro-Regular.ttf',
+                        type=argparse.FileType('rb'))
+    return parser
+
+source_path = 'fonts/SourceCodePro'
+source_fonts = [fontforge.open(path.join(source_path, file)) for file in next(walk(source_path), (None, None, []))[2]]
+source_styles = {source_font.fontname.split('-')[1].replace('It', 'Italic'): source_font for source_font in source_fonts}
+
+def get_source(fontname):
+    fontname = fontname.lower()
+    for style, font in source_styles.items():
+        if style.lower() in fontname:
+            return font
+    return source_styles['Regular']
+
+def replace_sfnt(font, key, value):
+    font.sfnt_names = tuple(
+        (row[0], key, value)
+        if row[1] == key
+        else row
+        for row in font.sfnt_names
+    )
+
+def patch_one_font(source_font, target_font, output_dir, rename_font=True):
+    if rename_font:
+        old = target_font.fullname
+        old_name = target_font.familyname
+        try:
+            suffix = target_font.fontname.split('-')[1]
+        except IndexError:
+            suffix = None
+
+        new_name = target_font.familyname + ' Pro'
+
+        if suffix:
+            target_font.fullname = "%s %s" % (new_name, suffix)
+            target_font.fontname = "%s-%s" % (new_name.replace(' ', ''), suffix)
+        else:
+            target_font.fullname = new_name
+            target_font.fontname = new_name.replace(' ', '')
+
+        target_font.copyright = (target_font.copyright or '') + COPYRIGHT
+        replace_sfnt(target_font, 'UniqueID', '%s; Pro' % target_font.fullname)
+        replace_sfnt(target_font, 'Preferred Family', new_name)
+        replace_sfnt(target_font, 'Compatible Full', new_name)
+        replace_sfnt(target_font, 'Family', new_name)
+        replace_sfnt(target_font, 'WWS Family', new_name)
+
+        print("%s -> %s" % (old, target_font.fullname))
+
+    for ch in range(0x2500, 0x259f):
+        source_font.selection.none()
+        source_font.selection.select(ch)
+        source_font.copy()
+        target_font.selection.none()
+        target_font.selection.select(ch)
+        target_font.paste()
+
+    # Generate patched font
+    extension = path.splitext(target_font.path)[1]
+    if extension.lower() not in ['.ttf', '.otf']:
+        # Default to OpenType if input is not TrueType/OpenType
+        extension = '.ttf'
+    if not path.exists(output_dir):
+        makedirs(output_dir)
+    output_file = path.join(output_dir, '{0}{1}'.format(target_font.fontname, extension))
+    target_font.generate(output_file)
+
+
+def patch_fonts(source_file, target_files, output_dir, rename_font=True):
+    for target_file in target_files:
+        target_font = fontforge.open(target_file.name)
+        source_font = get_source(target_font.fontname)
+        try:
+            patch_one_font(source_font, target_font, output_dir, rename_font)
+        finally:
+            target_font.close()
+
+    for source_font in source_fonts:
+        source_font.close()
+
+    return 0
+
+
+def main(argv):
+    args = get_argparser().parse_args(argv)
+    return patch_fonts(args.source_font, args.target_fonts, args.output_dir, args.rename_font)
+
+if __name__ == "__main__":
+    # __dir__ = os.path.dirname(os.path.abspath(__file__))
+    raise SystemExit(main(sys.argv[1:]))
